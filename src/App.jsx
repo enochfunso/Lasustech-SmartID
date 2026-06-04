@@ -235,47 +235,132 @@ function denyReason(s, sec) {
 
 
 // ── Custom QR Code (no external lib needed) ───────────────────────────────
-// ── Real QR Code (loads qrcode.js from CDN, renders to <canvas>) ─────────────
+import { useEffect, useRef, useState } from "react";
+
+// ---------- QRCode Component with error handling & fallback ----------
 function QRCode({ value, size = 220, bgColor = "#ffffff", fgColor = "#000000" }) {
   const canvasRef = useRef(null);
-  const [ready, setReady] = useState(typeof window !== "undefined" && !!window._QRLIB);
+  const [status, setStatus] = useState("loading"); // "loading", "ready", "error"
+  const [retryCount, setRetryCount] = useState(0);
 
+  // Load QR library with fallback CDN
   useEffect(() => {
-    if (window._QRLIB) { setReady(true); return; }
-    const s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js";
-    s.onload = () => { window._QRLIB = true; setReady(true); };
-    s.onerror = () => console.error("QR lib failed to load");
-    document.head.appendChild(s);
-  }, []);
+    // If already loaded globally, we're ready
+    if (window._QRLIB && typeof window.QRCode?.toCanvas === "function") {
+      setStatus("ready");
+      return;
+    }
 
+    // Try primary CDN, fallback to unpkg if primary fails
+    const cdnList = [
+      "https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js",
+      "https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js",
+    ];
+    let attempt = 0;
+
+    const loadScript = (url) => {
+      const script = document.createElement("script");
+      script.src = url;
+      script.onload = () => {
+        if (typeof window.QRCode?.toCanvas === "function") {
+          window._QRLIB = true;
+          setStatus("ready");
+        } else {
+          // Library loaded but wrong export – try next CDN
+          if (attempt + 1 < cdnList.length) {
+            attempt++;
+            loadScript(cdnList[attempt]);
+          } else {
+            setStatus("error");
+          }
+        }
+      };
+      script.onerror = () => {
+        if (attempt + 1 < cdnList.length) {
+          attempt++;
+          loadScript(cdnList[attempt]);
+        } else {
+          setStatus("error");
+        }
+      };
+      document.head.appendChild(script);
+    };
+
+    loadScript(cdnList[0]);
+  }, [retryCount]);
+
+  // Render QR when ready
   useEffect(() => {
-    if (!ready || !canvasRef.current || !value) return;
-    window.QRCode.toCanvas(canvasRef.current, value, {
-      width: size, margin: 1,
-      color: { dark: fgColor, light: bgColor }
-    }, (err) => { if (err) console.error("QR render:", err); });
-  }, [ready, value, size, bgColor, fgColor]);
+    if (status !== "ready" || !canvasRef.current || !value) return;
+    try {
+      window.QRCode.toCanvas(
+        canvasRef.current,
+        value,
+        { width: size, margin: 1, color: { dark: fgColor, light: bgColor } },
+        (err) => err && console.error("QR render error:", err)
+      );
+    } catch (err) {
+      console.error("QR render exception:", err);
+      setStatus("error");
+    }
+  }, [status, value, size, bgColor, fgColor]);
+
+  // Manual retry
+  const handleRetry = () => setRetryCount((prev) => prev + 1);
+
+  if (status === "error") {
+    return (
+      <div style={{ textAlign: "center" }}>
+        <div style={{ color: "#fca5a5", fontSize: 13, marginBottom: 8 }}>
+          ⚠️ QR code library failed to load
+        </div>
+        <button
+          onClick={handleRetry}
+          style={{
+            background: "rgba(255,255,255,0.1)",
+            border: "1px solid rgba(255,255,255,0.2)",
+            borderRadius: 20,
+            padding: "6px 14px",
+            color: "#fff",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          ↻ Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (status === "loading") {
+    return (
+      <div
+        style={{
+          width: size,
+          height: size,
+          background: bgColor,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 12,
+          color: "#888",
+          borderRadius: 4,
+        }}
+      >
+        Loading QR...
+      </div>
+    );
+  }
 
   return (
-    <div style={{ display:"inline-block", lineHeight:0 }}>
-      {!ready && (
-        <div style={{ width:size, height:size, background:bgColor, display:"flex", alignItems:"center",
-          justifyContent:"center", fontSize:11, color:"#888", borderRadius:4 }}>
-          Loading QR...
-        </div>
-      )}
-      <canvas ref={canvasRef} style={{ display: ready ? "block" : "none", borderRadius:4 }} />
-    </div>
+    <canvas
+      ref={canvasRef}
+      width={size}
+      height={size}
+      style={{ display: "block", borderRadius: 4 }}
+    />
   );
 }
-
-// Static QR: unique per student, no timestamp (screenshot protection handles security)
-function makeQR(s) {
-  const sig = btoa(s.matric + "LASUSTECH2026").replace(/[+/=]/g,"").slice(0,12).toUpperCase();
-  return `LASUSTECH|${s.matric}|STATIC|${sig}`;
-}
-
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App() {
   const [scr,      setScr]      = useState("welcome");
@@ -1160,3 +1245,4 @@ body{font-family:'Outfit',sans-serif;background:#06091a;}
 /* Scrollbar */
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:2px;}
 `;
+
