@@ -207,10 +207,10 @@ const STAFF_DB = [
 ];
 
 const SECTIONS = [
-  { id:"attendance", label:"Lecture Attendance", icon:"📋", desc:"Log student presence", color:"#3b82f6", accent:"rgba(59,130,246,0.15)" },
-  { id:"exam",       label:"Exam Verification",  icon:"📝", desc:"Verify exam eligibility", color:"#8b5cf6", accent:"rgba(139,92,246,0.15)" },
-  { id:"library",    label:"Library Access",     icon:"📚", desc:"Manage library entry", color:"#10b981", accent:"rgba(16,185,129,0.15)" },
-  { id:"medical",    label:"Medical Centre",     icon:"🏥", desc:"Verify health coverage", color:"#f59e0b", accent:"rgba(245,158,11,0.15)" },
+  { id:"attendance", label:"Lecture Attendance", icon:"A", desc:"Log student presence", color:"#3b82f6", accent:"rgba(59,130,246,0.15)" },
+  { id:"exam",       label:"Exam Verification",  icon:"E", desc:"Verify exam eligibility", color:"#8b5cf6", accent:"rgba(139,92,246,0.15)" },
+  { id:"library",    label:"Library Access",     icon:"L", desc:"Manage library entry", color:"#10b981", accent:"rgba(16,185,129,0.15)" },
+  { id:"medical",    label:"Medical Centre",     icon:"M", desc:"Verify health coverage", color:"#f59e0b", accent:"rgba(245,158,11,0.15)" },
 ];
 
 const COURSES = ["CSC 401","CSC 403","CSC 405","CSC 407","CSC 409","CSC 411"];
@@ -235,53 +235,45 @@ function denyReason(s, sec) {
 
 
 // ── Custom QR Code (no external lib needed) ───────────────────────────────
-function QRCode({ value, size = 200, bgColor = "#ffffff", fgColor = "#000000" }) {
-  const N = 25;
-  const cell = size / N;
-  // Seeded hash
-  let h = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    h ^= value.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  const rng = (i) => {
-    let v = (h ^ (i * 2654435761)) >>> 0;
-    v ^= v >>> 16; v = (v * 0x45d9f3b) >>> 0;
-    v ^= v >>> 16;
-    return (v >>> 0) / 0xFFFFFFFF;
-  };
-  // Build matrix
-  const M = Array.from({length:N}, () => Array(N).fill(0));
-  // Finder patterns 7x7 at three corners
-  const fp = (r,c) => {
-    for(let i=0;i<7;i++) for(let j=0;j<7;j++){
-      M[r+i][c+j] = (i===0||i===6||j===0||j===6||(i>=2&&i<=4&&j>=2&&j<=4))?1:2;
-    }
-  };
-  fp(0,0); fp(0,N-7); fp(N-7,0);
-  // Timing patterns
-  for(let i=8;i<N-8;i++){ M[6][i]=M[6][i]||((i%2===0)?1:2); M[i][6]=M[i][6]||((i%2===0)?1:2); }
-  // Data modules
-  let idx=0;
-  for(let r=0;r<N;r++) for(let c=0;c<N;c++){
-    if(M[r][c]===0) M[r][c]=rng(idx+++(h%97))>0.5?1:2;
-  }
-  const rects=[];
-  for(let r=0;r<N;r++) for(let c=0;c<N;c++){
-    if(M[r][c]===1) rects.push(<rect key={r+"-"+c} x={c*cell} y={r*cell} width={cell+0.5} height={cell+0.5} fill={fgColor}/>);
-  }
+// ── Real QR Code (loads qrcode.js from CDN, renders to <canvas>) ─────────────
+function QRCode({ value, size = 220, bgColor = "#ffffff", fgColor = "#000000" }) {
+  const canvasRef = useRef(null);
+  const [ready, setReady] = useState(typeof window !== "undefined" && !!window._QRLIB);
+
+  useEffect(() => {
+    if (window._QRLIB) { setReady(true); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js";
+    s.onload = () => { window._QRLIB = true; setReady(true); };
+    s.onerror = () => console.error("QR lib failed to load");
+    document.head.appendChild(s);
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !canvasRef.current || !value) return;
+    window.QRCode.toCanvas(canvasRef.current, value, {
+      width: size, margin: 1,
+      color: { dark: fgColor, light: bgColor }
+    }, (err) => { if (err) console.error("QR render:", err); });
+  }, [ready, value, size, bgColor, fgColor]);
+
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{display:"block",borderRadius:4}}>
-      <rect width={size} height={size} fill={bgColor}/>
-      {rects}
-    </svg>
+    <div style={{ display:"inline-block", lineHeight:0 }}>
+      {!ready && (
+        <div style={{ width:size, height:size, background:bgColor, display:"flex", alignItems:"center",
+          justifyContent:"center", fontSize:11, color:"#888", borderRadius:4 }}>
+          Loading QR...
+        </div>
+      )}
+      <canvas ref={canvasRef} style={{ display: ready ? "block" : "none", borderRadius:4 }} />
+    </div>
   );
 }
 
+// Static QR: unique per student, no timestamp (screenshot protection handles security)
 function makeQR(s) {
-  const ts  = Math.floor(Date.now() / 1000);
-  const sig = btoa(s.matric + "|" + ts).slice(0, 12);
-  return `LASUSTECH|${s.matric}|${ts}|${sig}`;
+  const sig = btoa(s.matric + "LASUSTECH2026").replace(/[+/=]/g,"").slice(0,12).toUpperCase();
+  return `LASUSTECH|${s.matric}|STATIC|${sig}`;
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
@@ -290,8 +282,6 @@ export default function App() {
   const [student,  setStudent]  = useState(null);
   const [staff,    setStaff]    = useState(null);
   const [section,  setSection]  = useState(null);
-  const [qrData,   setQrData]   = useState("");
-  const [qrTimer,  setQrTimer]  = useState(15);
   const [scanLog,  setScanLog]  = useState([]);
   const [scanRes,  setScanRes]  = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -301,28 +291,12 @@ export default function App() {
   const [course,   setCourse]   = useState(COURSES[0]);
   const [toast,    setToast]    = useState(null);
   const studentRef = useRef(null);
-  const timerRef   = useRef(null);
 
   const go = (page) => { setErr(""); setScr(page); };
   const showToast = (msg, type="info") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2800);
   };
-
-  // QR lifecycle
-  useEffect(() => {
-    if (scr !== "dash" || !student) return;
-    studentRef.current = student;
-    setQrData(makeQR(student));
-    setQrTimer(15);
-    timerRef.current = setInterval(() => {
-      setQrTimer(t => {
-        if (t <= 1) { setQrData(makeQR(studentRef.current)); return 15; }
-        return t - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [scr, student]);
 
   const studentLogin = () => {
     const s = STUDENTS.find(x => x.matric === form.id.trim() && x.surname === form.surname.trim().toUpperCase());
@@ -346,16 +320,23 @@ export default function App() {
     if (!input) return;
     setScanRes(null);
     let picked = null;
-    // If it looks like a QR payload: LASUSTECH|matric|ts|sig
+    // Parse QR payload: LASUSTECH|matric|STATIC|sig  OR  legacy timestamp format
     if (typeof input === "string" && input.startsWith("LASUSTECH|")) {
       const parts = input.split("|");
       if (parts.length >= 3) {
         const matric = parts[1];
-        const ts = parseInt(parts[2], 10);
-        const ageMs = Date.now() - ts * 1000;
-        if (ageMs > 30000) { showToast("QR expired — student must refresh", "warn"); return; }
-        picked = STUDENTS.find(x => x.matric === matric);
-        if (!picked) { showToast("Student not found in system", "warn"); return; }
+        if (parts[2] === "STATIC") {
+          // Static QR — no expiry check
+          picked = STUDENTS.find(x => x.matric === matric);
+          if (!picked) { showToast("Student not found in system", "warn"); return; }
+        } else {
+          // Legacy: timestamp-based
+          const ts = parseInt(parts[2], 10);
+          const ageMs = Date.now() - ts * 1000;
+          if (ageMs > 30000) { showToast("QR expired — ask student to refresh", "warn"); return; }
+          picked = STUDENTS.find(x => x.matric === matric);
+          if (!picked) { showToast("Student not found in system", "warn"); return; }
+        }
       }
     } else {
       // Direct matric string (manual list tap)
@@ -401,7 +382,7 @@ export default function App() {
         {scr === "welcome"  && <Welcome go={go} />}
         {scr === "role"     && <Role go={go} />}
         {scr === "s-login"  && <StudentLogin form={form} setForm={setForm} onLogin={studentLogin} err={err} go={go} />}
-        {scr === "dash"     && student && <Dashboard student={student} qrData={qrData} qrTimer={qrTimer} go={go} />}
+        {scr === "dash"     && student && <Dashboard student={student} go={go} />}
         {scr === "sections" && <SectionSelect go={go} setSection={setSection} />}
         {scr === "st-login" && section && <StaffLogin section={section} form={form} setForm={setForm} onLogin={staffLogin} err={err} go={go} />}
         {scr === "scan"     && section && staff && (
@@ -426,7 +407,7 @@ function Welcome({ go }) {
         <h1 className="display-title">Unified Smart<br />ID Card System</h1>
         <p className="sub-text">One digital identity for every campus service — attendance, exams, library &amp; medical</p>
         <div className="chip-row">
-          {[["📋","Attendance"],["📝","Exam Access"],["📚","Library"],["🏥","Medical"]].map(([icon,l]) => (
+          {[["Attendance","Attendance"],["Exam Access","Exam Access"],["Library","Library"],["Medical","Medical"]].map(([icon,l]) => (
             <span key={l} className="chip">{icon} {l}</span>
           ))}
         </div>
@@ -454,8 +435,8 @@ function Role({ go }) {
       </div>
       <div className="role-grid">
         {[
-          { page:"s-login",  icon:"🎓", title:"Student",  sub:"View your dynamic QR code &amp; campus access status", color:"#3b82f6", tags:["Dynamic QR","Access status","Real-time refresh"] },
-          { page:"sections", icon:"🏫", title:"Staff",    sub:"Scan student QR codes and manage section access",       color:"#8b5cf6", tags:["QR Scanner","Scan log","Section control"] },
+          { page:"s-login",  icon:"S", title:"Student",  sub:"View your dynamic QR code &amp; campus access status", color:"#3b82f6", tags:["Dynamic QR","Access status","Real-time refresh"] },
+          { page:"sections", icon:"F", title:"Staff",    sub:"Scan student QR codes and manage section access",       color:"#8b5cf6", tags:["QR Scanner","Scan log","Section control"] },
         ].map(r => (
           <div key={r.page} className="role-card" style={{ "--rc":r.color }} onClick={() => go(r.page)}>
             <div className="role-icon-wrap">{r.icon}</div>
@@ -518,9 +499,21 @@ function StudentLogin({ form, setForm, onLogin, err, go }) {
 }
 
 // ── Student Dashboard ─────────────────────────────────────────────────────
-function Dashboard({ student, qrData, qrTimer, go }) {
-  const pct = (qrTimer / 15) * 100;
-  const barColor = qrTimer > 8 ? "#10b981" : qrTimer > 4 ? "#f59e0b" : "#ef4444";
+function Dashboard({ student, go }) {
+  const qrPayload = makeQR(student);
+  const [blurred, setBlurred] = useState(false);
+
+  // Screenshot protection: blur QR when tab loses focus
+  useEffect(() => {
+    const onHide = () => setBlurred(document.hidden);
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("blur", () => setBlurred(true));
+    window.addEventListener("focus", () => setBlurred(false));
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, []);
+
   return (
     <div className="dash-page fade">
       <div className="dash-topbar">
@@ -560,18 +553,28 @@ function Dashboard({ student, qrData, qrTimer, go }) {
 
         {/* QR Card */}
         <div className="glass-card qr-card" style={{ padding:"2rem", textAlign:"center" }}>
-          <p className="qr-label">Live QR · Refreshes every 15s</p>
-          <div className="qr-ring">
-            <QRCode value={qrData || "LASUSTECH"} size={200} bgColor="#0a0a20" fgColor="#ffffff" level="H" />
+          <p className="qr-label">Campus Access QR — Unique to your account</p>
+
+          {/* QR with screenshot blur overlay */}
+          <div className="qr-ring" style={{ position:"relative", display:"inline-block" }}>
+            <QRCode value={qrPayload} size={220} bgColor="#ffffff" fgColor="#0a0a20" />
+            {blurred && (
+              <div style={{
+                position:"absolute", inset:0, borderRadius:8,
+                background:"rgba(10,10,30,0.92)",
+                backdropFilter:"blur(12px)",
+                display:"flex", flexDirection:"column",
+                alignItems:"center", justifyContent:"center", gap:8
+              }}>
+                <div style={{ fontSize:24, color:"rgba(255,255,255,0.6)" }}>&#9679;&#9679;&#9679;</div>
+                <p style={{ color:"rgba(255,255,255,0.55)", fontSize:12, margin:0 }}>Return to app to view QR</p>
+              </div>
+            )}
           </div>
-          <div className="timer-row">
-            <span className="timer-lbl">Next refresh</span>
-            <span className="timer-count" style={{ color:barColor }}>{qrTimer}s</span>
-          </div>
-          <div className="progress-track">
-            <div className="progress-fill" style={{ width:`${pct}%`, background:barColor }} />
-          </div>
-          <p className="qr-hint">Present to any LASUSTECH reader terminal · Do not screenshot</p>
+
+          <p className="qr-hint" style={{ marginTop:12 }}>
+            Present to staff scanner · QR blurs when you switch apps
+          </p>
 
           {/* Service Status */}
           <div className="service-grid">
@@ -579,9 +582,9 @@ function Dashboard({ student, qrData, qrTimer, go }) {
               const ok = eligible(student, s.id);
               return (
                 <div key={s.id} className="service-chip" style={{ borderColor: ok ? s.color+"44" : "rgba(239,68,68,0.25)", background: ok ? s.accent : "rgba(239,68,68,0.06)" }}>
-                  <span style={{ fontSize:18 }}>{s.icon}</span>
+                  <span className="service-dot" style={{ background: ok ? s.color : "#ef4444" }} />
                   <span className="service-name">{s.label}</span>
-                  <span className={`bdg ${ok?"bdg-ok":"bdg-no"}`}>{ok?"✓ Open":"✗ Closed"}</span>
+                  <span className={`bdg ${ok?"bdg-ok":"bdg-no"}`}>{ok?"Open":"Closed"}</span>
                 </div>
               );
             })}
@@ -888,13 +891,13 @@ function CameraScanner({ onDetected, scanRes }) {
         {!active && (
           <div className="scan-idle">
             {loading ? (
-              <><div className="scan-spinner" style={{fontSize:28}}>⟳</div>
+              <><div className="scan-spinner" style={{fontSize:28}}>...</div>
                 <p style={{color:"rgba(255,255,255,0.45)",fontSize:12,marginTop:8}}>Starting camera…</p></>
             ) : error ? (
-              <><div style={{fontSize:28,marginBottom:6}}>⚠️</div>
+              <><div style={{fontSize:28,marginBottom:6}}>(!)</div>
                 <p style={{color:"#fca5a5",fontSize:11,padding:"0 12px",lineHeight:1.5}}>{error}</p></>
             ) : (
-              <><div style={{fontSize:36,marginBottom:8}}>📷</div>
+              <><div style={{fontSize:36,marginBottom:8}}></div>
                 <p style={{color:"rgba(255,255,255,0.35)",fontSize:12}}>Camera ready</p></>
             )}
           </div>
@@ -913,7 +916,7 @@ function CameraScanner({ onDetected, scanRes }) {
         {!active ? (
           <button className="btn-primary" style={{flex:1,padding:"13px"}}
             onClick={startCamera} disabled={loading}>
-            {loading ? "Starting…" : "📷  Start Camera Scanner"}
+            {loading ? "Starting…" : "  Start Camera Scanner"}
           </button>
         ) : (
           <button className="btn-ghost" style={{flex:1,padding:"13px"}}
@@ -1058,6 +1061,7 @@ body{font-family:'Outfit',sans-serif;background:#06091a;}
 .progress-track{height:4px;background:rgba(255,255,255,.1);border-radius:4px;overflow:hidden;margin-bottom:12px;}
 .progress-fill{height:100%;border-radius:4px;transition:width 1s linear,background .5s;}
 .qr-hint{color:rgba(255,255,255,.22);font-size:11px;margin-bottom:18px;}
+.service-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
 .service-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;}
 .service-chip{border-radius:12px;padding:10px;display:flex;flex-direction:column;align-items:flex-start;gap:5px;border-width:1px;border-style:solid;}
 .service-name{color:#fff;font-size:11px;font-weight:600;}
@@ -1156,4 +1160,3 @@ body{font-family:'Outfit',sans-serif;background:#06091a;}
 /* Scrollbar */
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:2px;}
 `;
-
