@@ -341,22 +341,34 @@ export default function App() {
     setStaff(s); setForm({ id:"", surname:"" }); setScanLog([]); setScanRes(null); go("scan");
   };
 
-  const doScan = (targetMatric = null) => {
-    setScanning(true); setScanRes(null);
-    setTimeout(() => {
-      let picked;
-      if (targetMatric) picked = STUDENTS.find(x => x.matric === targetMatric);
-      else              picked = studentRef.current || STUDENTS[Math.floor(Math.random() * STUDENTS.length)];
-      if (!picked) { setScanning(false); showToast("No student QR active", "warn"); return; }
-      const ok = eligible(picked, section.id);
-      const reason = ok ? "Access granted" : denyReason(picked, section.id);
-      const entry = { ...picked, granted:ok, reason, time: new Date().toLocaleTimeString("en-NG",{hour:"2-digit",minute:"2-digit",second:"2-digit"}), course: section.id === "attendance" ? course : null };
-      setScanRes(entry);
-      setScanLog(prev => [entry, ...prev.slice(0,14)]);
-      setScanning(false);
-      setModal(ok ? "granted" : "denied");
-      setTimeout(() => setModal(null), 3500);
-    }, 1800);
+  // Process a decoded QR string (real camera) OR a direct matric (manual pick)
+  const doScan = (input = null) => {
+    if (!input) return;
+    setScanRes(null);
+    let picked = null;
+    // If it looks like a QR payload: LASUSTECH|matric|ts|sig
+    if (typeof input === "string" && input.startsWith("LASUSTECH|")) {
+      const parts = input.split("|");
+      if (parts.length >= 3) {
+        const matric = parts[1];
+        const ts = parseInt(parts[2], 10);
+        const ageMs = Date.now() - ts * 1000;
+        if (ageMs > 30000) { showToast("QR expired — student must refresh", "warn"); return; }
+        picked = STUDENTS.find(x => x.matric === matric);
+        if (!picked) { showToast("Student not found in system", "warn"); return; }
+      }
+    } else {
+      // Direct matric string (manual list tap)
+      picked = STUDENTS.find(x => x.matric === input);
+    }
+    if (!picked) { showToast("Unrecognised QR code", "warn"); return; }
+    const ok = eligible(picked, section.id);
+    const reason = ok ? "Access granted" : denyReason(picked, section.id);
+    const entry = { ...picked, granted:ok, reason, time: new Date().toLocaleTimeString("en-NG",{hour:"2-digit",minute:"2-digit",second:"2-digit"}), course: section.id === "attendance" ? course : null };
+    setScanRes(entry);
+    setScanLog(prev => [entry, ...prev.slice(0,14)]);
+    setModal(ok ? "granted" : "denied");
+    setTimeout(() => setModal(null), 3500);
   };
 
   return (
@@ -671,31 +683,9 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
             </div>
           )}
 
-          {/* Scanner viewport */}
+          {/* Scanner viewport – real camera */}
           <div className="glass-card" style={{ padding:"1.5rem", textAlign:"center", marginBottom:12 }}>
-            <div className="scanner-frame">
-              <span className="corner tl" /><span className="corner tr" />
-              <span className="corner bl" /><span className="corner br" />
-              {scanning ? (
-                <div className="scan-inner">
-                  <div className="scan-line" />
-                  <div className="scan-spinner">⟳</div>
-                  <p style={{ color:"rgba(255,255,255,0.45)", fontSize:12, marginTop:8 }}>Reading QR code…</p>
-                </div>
-              ) : scanRes ? (
-                <div className="scan-result-mini">
-                  <div className={`srm-status ${scanRes.granted?"ok":"no"}`}>{scanRes.granted ? "✓ GRANTED" : "✗ DENIED"}</div>
-                  <div className="srm-name">{scanRes.name}</div>
-                  <div className="srm-detail">{scanRes.reason}</div>
-                </div>
-              ) : (
-                <div className="scan-idle">
-                  <div style={{ fontSize:36, marginBottom:8 }}>📱</div>
-                  <p style={{ color:"rgba(255,255,255,0.35)", fontSize:12 }}>Awaiting scan</p>
-                </div>
-              )}
-            </div>
-
+            <CameraScanner onDetected={doScan} scanRes={scanRes} />
             {scanRes && (
               <div className={`result-card ${scanRes.granted?"rc-ok":"rc-no"}`} style={{ marginTop:16, textAlign:"left" }}>
                 <div className="result-head">
@@ -711,11 +701,6 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
                 </div>
               </div>
             )}
-
-            <button className="btn-primary" style={{ width:"100%", marginTop:16, padding:"14px" }}
-              onClick={() => doScan()} disabled={scanning}>
-              {scanning ? "Scanning…" : "📷  Simulate QR Scan"}
-            </button>
           </div>
 
           {/* Manual student picks */}
@@ -787,6 +772,161 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// ── CameraScanner ─────────────────────────────────────────────────────────
+// Loads jsQR dynamically, streams back camera, scans every animation frame.
+// Falls back to BarcodeDetector (Chrome/Android native) when available.
+function CameraScanner({ onDetected, scanRes }) {
+  const videoRef  = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef    = useRef(null);
+  const lastRef   = useRef("");        // debounce: ignore same QR twice in a row
+  const jsqrRef   = useRef(null);
+  const detRef    = useRef(null);
+
+  const [active,  setActive]  = useState(false);
+  const [error,   setError]   = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  // Load jsQR once
+  useEffect(() => {
+    if (window.jsQR) { jsqrRef.current = window.jsQR; return; }
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js";
+    s.onload = () => { jsqrRef.current = window.jsQR; };
+    document.head.appendChild(s);
+    // Also check native BarcodeDetector
+    if ("BarcodeDetector" in window) {
+      try { detRef.current = new window.BarcodeDetector({ formats:["qr_code"] }); } catch(_){}
+    }
+  }, []);
+
+  const stopCamera = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setActive(false);
+  };
+
+  const startCamera = async () => {
+    setError(null); setLoading(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal:"environment" }, width:{ideal:1280}, height:{ideal:720} }
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setActive(true); setLoading(false);
+      tick();
+    } catch(e) {
+      setLoading(false);
+      setError(e.name === "NotAllowedError"
+        ? "Camera permission denied. Please allow camera access and try again."
+        : "Could not start camera: " + e.message);
+    }
+  };
+
+  const tick = () => {
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) { rafRef.current = requestAnimationFrame(tick); return; }
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) { rafRef.current = requestAnimationFrame(tick); return; }
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, w, h);
+
+    const tryDecode = async () => {
+      let decoded = null;
+      // Try native BarcodeDetector first (faster on Android)
+      if (detRef.current) {
+        try {
+          const results = await detRef.current.detect(canvas);
+          if (results.length > 0) decoded = results[0].rawValue;
+        } catch(_) {}
+      }
+      // Fallback: jsQR
+      if (!decoded && jsqrRef.current) {
+        const imgData = ctx.getImageData(0, 0, w, h);
+        const result  = jsqrRef.current(imgData.data, w, h, { inversionAttempts:"dontInvert" });
+        if (result) decoded = result.data;
+      }
+      if (decoded && decoded !== lastRef.current) {
+        lastRef.current = decoded;
+        onDetected(decoded);
+        // Cool-down: pause scanning for 3s after a hit so result stays visible
+        setTimeout(() => { lastRef.current = ""; }, 3000);
+      }
+    };
+    tryDecode();
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  useEffect(() => () => stopCamera(), []);
+
+  return (
+    <div>
+      <div className="scanner-frame" style={{ position:"relative", overflow:"hidden" }}>
+        <span className="corner tl" /><span className="corner tr" />
+        <span className="corner bl" /><span className="corner br" />
+        {/* Live camera feed */}
+        <video ref={videoRef} playsInline muted
+          style={{ position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover",
+                   display: active ? "block" : "none", transform:"scaleX(1)" }} />
+        <canvas ref={canvasRef} style={{ display:"none" }} />
+        {/* Scan-line overlay */}
+        {active && <div className="scan-line" style={{ position:"absolute", left:0, right:0, zIndex:10 }} />}
+        {/* Idle / error state */}
+        {!active && (
+          <div className="scan-idle">
+            {loading ? (
+              <><div className="scan-spinner" style={{fontSize:28}}>⟳</div>
+                <p style={{color:"rgba(255,255,255,0.45)",fontSize:12,marginTop:8}}>Starting camera…</p></>
+            ) : error ? (
+              <><div style={{fontSize:28,marginBottom:6}}>⚠️</div>
+                <p style={{color:"#fca5a5",fontSize:11,padding:"0 12px",lineHeight:1.5}}>{error}</p></>
+            ) : (
+              <><div style={{fontSize:36,marginBottom:8}}>📷</div>
+                <p style={{color:"rgba(255,255,255,0.35)",fontSize:12}}>Camera ready</p></>
+            )}
+          </div>
+        )}
+        {/* Detected flash */}
+        {scanRes && (
+          <div className={`scan-result-mini`} style={{position:"absolute",inset:0,zIndex:20,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:scanRes.granted?"rgba(16,185,129,0.85)":"rgba(239,68,68,0.85)"}}>
+            <div className={`srm-status ${scanRes.granted?"ok":"no"}`}>{scanRes.granted ? "✓ GRANTED" : "✗ DENIED"}</div>
+            <div className="srm-name">{scanRes.name}</div>
+            <div className="srm-detail">{scanRes.reason}</div>
+          </div>
+        )}
+      </div>
+      {/* Controls */}
+      <div style={{display:"flex",gap:8,marginTop:12}}>
+        {!active ? (
+          <button className="btn-primary" style={{flex:1,padding:"13px"}}
+            onClick={startCamera} disabled={loading}>
+            {loading ? "Starting…" : "📷  Start Camera Scanner"}
+          </button>
+        ) : (
+          <button className="btn-ghost" style={{flex:1,padding:"13px"}}
+            onClick={stopCamera}>
+            ⏹ Stop Camera
+          </button>
+        )}
+      </div>
+      {active && (
+        <p style={{color:"rgba(255,255,255,0.3)",fontSize:11,marginTop:8,textAlign:"center"}}>
+          Point at the QR code on the student's phone
+        </p>
+      )}
     </div>
   );
 }
@@ -1016,3 +1156,4 @@ body{font-family:'Outfit',sans-serif;background:#06091a;}
 /* Scrollbar */
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:2px;}
 `;
+
