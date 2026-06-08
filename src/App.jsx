@@ -507,9 +507,9 @@ function Dashboard({ student, go }) {
           </div>
           <div className="divider" />
           <div className="info-rows">
-            <div className="info-row"><span className="ir-label">Session</span><span className="ir-val">2024/2026</span></div>
-            <div className="info-row"><span className="ir-label">College</span><span className="ir-val">Computing &amp; IT</span></div>
-            <div className="info-row"><span className="ir-label">Attendance</span><span className="ir-val" style={{ color:"#10b981" }}>{student.attendance} sessions</span></div>
+            <div className="info-row"><span className="ir-label">Session</span><span className="ir-val">2025/2026</span></div>
+            <div className="info-row"><span className="ir-label">College</span><span className="ir-val">Basic Sciences</span></div>
+            <div className="info-row"><span className="ir-label">Attendance</span><span className="ir-val" style={{ color:"#10b981" }}>8 sessions</span></div>
           </div>
           <div className="divider" />
           <div className="flag-grid">
