@@ -627,8 +627,94 @@ function StaffLogin({ section, form, setForm, onLogin, err, go }) {
 }
 
 // ── Scanner ───────────────────────────────────────────────────────────────
+// ==================== UPDATED Scanner Component with Camera ====================
 function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, course, setCourse, students }) {
-  const [tab, setTab] = useState("scan");
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const lastQR = useRef("");
+
+  // Load jsQR dynamically
+  useEffect(() => {
+    if (window.jsQR) return;
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+    script.async = true;
+    document.head.appendChild(script);
+  }, []);
+
+  const startCamera = async () => {
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: "environment" } }
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setCameraActive(true);
+        scanLoop();
+      }
+    } catch (err) {
+      console.error("Camera error:", err);
+      setCameraError(err.name === "NotAllowedError" 
+        ? "Camera permission denied. Please allow camera access."
+        : "Could not start camera. Using manual mode.");
+    }
+  };
+
+  const stopCamera = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraActive(false);
+  };
+
+  const scanLoop = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState !== 4) {
+      rafRef.current = requestAnimationFrame(scanLoop);
+      return;
+    }
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (w === 0 || h === 0) {
+      rafRef.current = requestAnimationFrame(scanLoop);
+      return;
+    }
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, w, h);
+    const imageData = ctx.getImageData(0, 0, w, h);
+    if (window.jsQR) {
+      const code = window.jsQR(imageData.data, w, h);
+      if (code && code.data !== lastQR.current) {
+        lastQR.current = code.data;
+        doScan(code.data);
+        // debounce: ignore same QR for 3 seconds
+        setTimeout(() => { lastQR.current = ""; }, 3000);
+      }
+    }
+    rafRef.current = requestAnimationFrame(scanLoop);
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    };
+  }, []);
+
   return (
     <div className="scan-page fade">
       <div className="scan-topbar">
@@ -640,9 +726,8 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
       </div>
 
       <div className="scan-grid">
-        {/* Left: Scanner + Log */}
+        {/* Left Column: Scanner & Manual Inputs */}
         <div>
-          {/* Course picker (attendance only) */}
           {section.id === "attendance" && (
             <div className="glass-card" style={{ padding:"1rem 1.25rem", marginBottom:12 }}>
               <p className="lbl" style={{ marginBottom:10 }}>Active Course</p>
@@ -654,18 +739,25 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
             </div>
           )}
 
-          {/* Scanner viewport – simplified: manual QR input + demo picks */}
+          {/* Camera Scanner */}
           <div className="glass-card" style={{ padding:"1.5rem", textAlign:"center", marginBottom:12 }}>
-            <div className="scanner-frame" style={{ background: "#000", borderRadius: 12, minHeight: 200, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" }}>
-              <p style={{ color: "rgba(255,255,255,0.6)", marginBottom: 12 }}>📱 QR Scanner Simulated</p>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input type="text" id="manualQrInput" placeholder="Paste QR data or matric" style={{ padding: 8, borderRadius: 8, border: "none" }} />
-                <button className="btn-primary btn-sm" onClick={() => {
-                  const val = document.getElementById("manualQrInput").value;
-                  if (val) doScan(val);
-                }}>Scan</button>
-              </div>
-              <p style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 12 }}>Or select a student below to simulate</p>
+            <div className="scanner-frame" style={{ position:"relative", marginBottom:16 }}>
+              {!cameraActive && !cameraError && (
+                <div className="scan-idle">
+                  <button className="btn-primary" onClick={startCamera}>📷 Start Camera Scanner</button>
+                </div>
+              )}
+              {cameraError && (
+                <div className="scan-idle" style={{ color:"#fca5a5" }}>
+                  <p>{cameraError}</p>
+                  <button className="btn-ghost" style={{ marginTop:8 }} onClick={() => setCameraError(null)}>Retry</button>
+                </div>
+              )}
+              <video ref={videoRef} style={{ display: cameraActive ? "block" : "none", width:"100%", borderRadius:8 }} playsInline muted />
+              <canvas ref={canvasRef} style={{ display:"none" }} />
+              {cameraActive && (
+                <div className="scan-line" style={{ position:"absolute", left:0, right:0, top:"50%", transform:"translateY(-50%)", height:2, background:"#818cf8", animation:"scan-mv 2s ease-in-out infinite" }} />
+              )}
             </div>
 
             {scanRes && (
@@ -683,14 +775,26 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
                 </div>
               </div>
             )}
+
+            {cameraActive && (
+              <button className="btn-ghost" style={{ marginTop:12 }} onClick={stopCamera}>Stop Camera</button>
+            )}
           </div>
 
-          {/* Manual student picks */}
+          {/* Manual QR Input & Student List */}
           <div className="glass-card" style={{ padding:"1.25rem" }}>
-            <p className="lbl" style={{ marginBottom:10 }}>Scan Specific Student</p>
+            <p className="lbl" style={{ marginBottom:10 }}>Manual QR Entry (if camera fails)</p>
+            <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+              <input type="text" id="manualQrInput" placeholder="Paste QR data or matric" style={{ flex:1, padding:8, borderRadius:8, border:"none" }} />
+              <button className="btn-primary btn-sm" onClick={() => {
+                const val = document.getElementById("manualQrInput").value;
+                if (val) doScan(val);
+              }}>Verify</button>
+            </div>
+            <p className="lbl" style={{ marginBottom:10 }}>Quick Select Student</p>
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-              {students.slice(0, 10).map(s => (
-                <button key={s.matric} className="student-btn" onClick={() => doScan(s.matric)} disabled={scanning}>
+              {students.slice(0, 8).map(s => (
+                <button key={s.matric} className="student-btn" onClick={() => doScan(s.matric)}>
                   <div className="avi sm" style={{ background:"rgba(99,102,241,0.2)", color:"#a5b4fc" }}>{s.avatar}</div>
                   <div style={{ flex:1, textAlign:"left" }}>
                     <div className="sb-name">{s.name}</div>
@@ -705,7 +809,7 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
           </div>
         </div>
 
-        {/* Right: Scan Log */}
+        {/* Right Column: Scan Log & Stats */}
         <div>
           <div className="glass-card" style={{ padding:"1.25rem" }}>
             <div className="log-header">
@@ -735,7 +839,6 @@ function Scanner({ section, staff, scanning, scanRes, scanLog, doScan, go, cours
             )}
           </div>
 
-          {/* Session Stats */}
           <div className="glass-card" style={{ padding:"1.25rem", marginTop:12 }}>
             <p className="lbl" style={{ marginBottom:12 }}>Session Stats</p>
             <div className="stat-grid">
